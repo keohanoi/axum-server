@@ -23,3 +23,5 @@ bcrypt = "0.16"
 jsonwebtoken = "9.0"
 axum-extra = { version = "0.9", features = ["typed-header"] }
 headers = "0.4"
+rdkafka = { version = "0.36", default-features = false, features = ["tokio"] }
+futures = "0.3"

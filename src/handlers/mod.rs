@@ -10,10 +10,12 @@ use validator::Validate;
 use crate::{
     db::DbPool,
     error::{AppError, Result},
+    kafka::{TodoCreatedEvent, TodoUpdatedEvent, TodoDeletedEvent},
     models::{
         CreateTodoRequest, Todo, TodoListResponse, TodoQuery, TodoResponse, UpdateTodoRequest,
         Category, Tag, CategoryResponse, TagResponse,
     },
+    routes::AppState,
 };
 
 pub mod users;
@@ -72,7 +74,7 @@ async fn get_todo_with_relations(
 }
 
 pub async fn create_todo(
-    State(pool): State<DbPool>,
+    State(state): State<AppState>,
     Json(payload): Json<CreateTodoRequest>,
 ) -> Result<(StatusCode, Json<TodoResponse>)> {
     payload.validate().map_err(|e| AppError::Validation(e.to_string()))?;
@@ -93,7 +95,7 @@ pub async fn create_todo(
     .bind(&payload.due_date)
     .bind(now)
     .bind(now)
-    .fetch_one(&pool)
+    .fetch_one(&state.db_pool)
     .await?;
 
     // Handle tags if provided
@@ -108,24 +110,39 @@ pub async fn create_todo(
             .bind(tag_name)
             .bind(todo.user_id.unwrap_or_default()) // This should come from auth
             .bind(now)
-            .fetch_one(&pool)
+            .fetch_one(&state.db_pool)
             .await?;
 
             // Link tag to todo
             sqlx::query("INSERT INTO todo_tags (todo_id, tag_id) VALUES ($1, $2) ON CONFLICT DO NOTHING")
                 .bind(todo.id)
                 .bind(tag.id)
-                .execute(&pool)
+                .execute(&state.db_pool)
                 .await?;
         }
     }
 
-    let todo_response = get_todo_with_relations(&pool, todo.id).await?;
+    // Publish Kafka event
+    let event = TodoCreatedEvent {
+        todo_id: todo.id,
+        title: todo.title.clone(),
+        description: todo.description.clone(),
+        user_id: todo.user_id.unwrap_or_default(),
+        category_id: todo.category_id,
+        priority: todo.priority,
+        due_date: todo.due_date,
+        tags: payload.tags.unwrap_or_default(),
+    };
+    if let Err(e) = state.kafka_producer.publish_todo_created(event).await {
+        tracing::warn!("Failed to publish todo created event: {}", e);
+    }
+
+    let todo_response = get_todo_with_relations(&state.db_pool, todo.id).await?;
     Ok((StatusCode::CREATED, Json(todo_response)))
 }
 
 pub async fn get_todos(
-    State(pool): State<DbPool>,
+    State(state): State<AppState>,
     Query(params): Query<TodoQuery>,
 ) -> Result<Json<TodoListResponse>> {
     let page = params.page.unwrap_or(1).max(1);
@@ -188,7 +205,7 @@ pub async fn get_todos(
 
     let total: i64 = if query_params.is_empty() {
         sqlx::query_scalar("SELECT COUNT(*) FROM todos")
-            .fetch_one(&pool)
+            .fetch_one(&state.db_pool)
             .await?
     } else {
         let mut count_q = sqlx::query_scalar(&count_query);
@@ -205,11 +222,11 @@ pub async fn get_todos(
                 count_q = count_q.bind(param);
             }
         }
-        count_q.fetch_one(&pool).await?
+        count_q.fetch_one(&state.db_pool).await?
     };
 
     let todos: Vec<Todo> = if query_params.is_empty() {
-        sqlx::query_as(&query).fetch_all(&pool).await?
+        sqlx::query_as(&query).fetch_all(&state.db_pool).await?
     } else {
         let mut q = sqlx::query_as(&query);
         for param in &query_params {
@@ -225,13 +242,13 @@ pub async fn get_todos(
                 q = q.bind(param);
             }
         }
-        q.fetch_all(&pool).await?
+        q.fetch_all(&state.db_pool).await?
     };
 
     // Convert todos with relations
     let mut todo_responses = Vec::new();
     for todo in todos {
-        let todo_response = get_todo_with_relations(&pool, todo.id).await?;
+        let todo_response = get_todo_with_relations(&state.db_pool, todo.id).await?;
         todo_responses.push(todo_response);
     }
 
@@ -246,17 +263,17 @@ pub async fn get_todos(
 }
 
 pub async fn get_todo(
-    State(pool): State<DbPool>,
+    State(state): State<AppState>,
     Path(id): Path<Uuid>,
 ) -> Result<Json<TodoResponse>> {
-    let todo_response = get_todo_with_relations(&pool, id).await
+    let todo_response = get_todo_with_relations(&state.db_pool, id).await
         .map_err(|_| AppError::NotFound(format!("Todo with id {} not found", id)))?;
 
     Ok(Json(todo_response))
 }
 
 pub async fn update_todo(
-    State(pool): State<DbPool>,
+    State(state): State<AppState>,
     Path(id): Path<Uuid>,
     Json(payload): Json<UpdateTodoRequest>,
 ) -> Result<Json<TodoResponse>> {
@@ -264,12 +281,12 @@ pub async fn update_todo(
 
     let existing_todo = sqlx::query_as::<_, Todo>("SELECT * FROM todos WHERE id = $1")
         .bind(id)
-        .fetch_optional(&pool)
+        .fetch_optional(&state.db_pool)
         .await?
         .ok_or_else(|| AppError::NotFound(format!("Todo with id {} not found", id)))?;
 
-    let title = payload.title.unwrap_or(existing_todo.title);
-    let description = payload.description.or(existing_todo.description);
+    let title = payload.title.unwrap_or(existing_todo.title.clone());
+    let description = payload.description.or(existing_todo.description.clone());
     let completed = payload.completed.unwrap_or(existing_todo.completed);
     let category_id = payload.category_id.or(existing_todo.category_id);
     let priority = payload.priority.or(existing_todo.priority);
@@ -292,7 +309,7 @@ pub async fn update_todo(
     .bind(&due_date)
     .bind(Utc::now())
     .bind(id)
-    .fetch_one(&pool)
+    .fetch_one(&state.db_pool)
     .await?;
 
     // Handle tags update if provided
@@ -300,7 +317,7 @@ pub async fn update_todo(
         // Remove existing tags
         sqlx::query("DELETE FROM todo_tags WHERE todo_id = $1")
             .bind(id)
-            .execute(&pool)
+            .execute(&state.db_pool)
             .await?;
 
         // Add new tags
@@ -313,29 +330,61 @@ pub async fn update_todo(
             .bind(tag_name)
             .bind(updated_todo.user_id.unwrap_or_default())
             .bind(Utc::now())
-            .fetch_one(&pool)
+            .fetch_one(&state.db_pool)
             .await?;
 
             sqlx::query("INSERT INTO todo_tags (todo_id, tag_id) VALUES ($1, $2)")
                 .bind(id)
                 .bind(tag.id)
-                .execute(&pool)
+                .execute(&state.db_pool)
                 .await?;
         }
     }
 
-    let todo_response = get_todo_with_relations(&pool, id).await?;
+    // Publish Kafka event
+    let event = TodoUpdatedEvent {
+        todo_id: updated_todo.id,
+        title: if updated_todo.title != existing_todo.title { Some(updated_todo.title.clone()) } else { None },
+        description: if updated_todo.description != existing_todo.description { updated_todo.description.clone() } else { None },
+        completed: if updated_todo.completed != existing_todo.completed { Some(updated_todo.completed) } else { None },
+        category_id: if updated_todo.category_id != existing_todo.category_id { updated_todo.category_id } else { None },
+        priority: if updated_todo.priority != existing_todo.priority { updated_todo.priority } else { None },
+        due_date: if updated_todo.due_date != existing_todo.due_date { updated_todo.due_date } else { None },
+        tags: payload.tags,
+    };
+    if let Err(e) = state.kafka_producer.publish_todo_updated(event, updated_todo.user_id.unwrap_or_default()).await {
+        tracing::warn!("Failed to publish todo updated event: {}", e);
+    }
+
+    let todo_response = get_todo_with_relations(&state.db_pool, id).await?;
     Ok(Json(todo_response))
 }
 
-pub async fn delete_todo(State(pool): State<DbPool>, Path(id): Path<Uuid>) -> Result<StatusCode> {
+pub async fn delete_todo(State(state): State<AppState>, Path(id): Path<Uuid>) -> Result<StatusCode> {
+    // Get todo before deletion for event
+    let existing_todo = sqlx::query_as::<_, Todo>("SELECT * FROM todos WHERE id = $1")
+        .bind(id)
+        .fetch_optional(&state.db_pool)
+        .await?;
+
     let result = sqlx::query("DELETE FROM todos WHERE id = $1")
         .bind(id)
-        .execute(&pool)
+        .execute(&state.db_pool)
         .await?;
 
     if result.rows_affected() == 0 {
         return Err(AppError::NotFound(format!("Todo with id {} not found", id)));
+    }
+
+    // Publish Kafka event
+    if let Some(todo) = existing_todo {
+        let event = TodoDeletedEvent {
+            todo_id: id,
+            deleted_at: Utc::now(),
+        };
+        if let Err(e) = state.kafka_producer.publish_todo_deleted(event, todo.user_id.unwrap_or_default()).await {
+            tracing::warn!("Failed to publish todo deleted event: {}", e);
+        }
     }
 
     Ok(StatusCode::NO_CONTENT)

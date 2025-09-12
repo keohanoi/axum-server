@@ -1,4 +1,4 @@
-use axum_server::{config::Config, db, routes};
+use axum_server::{config::Config, db, kafka::EventProducer, routes};
 use std::process;
 use tokio::net::TcpListener;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
@@ -30,7 +30,21 @@ async fn main() {
         process::exit(1);
     }
 
-    let app = routes::create_routes(pool)
+    let kafka_producer = match EventProducer::new(config.kafka.clone()).await {
+        Ok(producer) => {
+            tracing::info!("Kafka producer initialized successfully");
+            producer
+        }
+        Err(err) => {
+            tracing::warn!("Kafka unavailable, continuing with disabled producer: {}", err);
+            let mut disabled_config = config.kafka.clone();
+            disabled_config.enabled = false;
+            EventProducer::new(disabled_config).await
+                .expect("Disabled Kafka producer should never fail")
+        }
+    };
+
+    let app = routes::create_routes(pool, kafka_producer)
         .layer(axum_server::middleware::create_cors_layer())
         .layer(axum_server::middleware::create_trace_layer())
         .layer(axum::middleware::from_fn(axum_server::middleware::request_logging));
