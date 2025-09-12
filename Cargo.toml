@@ -19,3 +19,7 @@ tower = { version = "0.5", features = ["util"] }
 tower-http = { version = "0.6", features = ["cors", "trace"] }
 dotenvy = "0.15"
 validator = { version = "0.18", features = ["derive"] }
+bcrypt = "0.16"
+jsonwebtoken = "9.0"
+axum-extra = { version = "0.9", features = ["typed-header"] }
+headers = "0.4"

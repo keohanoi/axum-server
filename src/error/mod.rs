@@ -22,8 +22,14 @@ pub enum AppError {
     #[error("Bad request: {0}")]
     BadRequest(String),
 
+    #[error("Conflict: {0}")]
+    Conflict(String),
+
+    #[error("Unauthorized: {0}")]
+    Unauthorized(String),
+
     #[error("Internal server error: {0}")]
-    Internal(#[from] anyhow::Error),
+    Internal(String),
 
     #[error("Serialization error: {0}")]
     Serialization(#[from] serde_json::Error),
@@ -39,8 +45,10 @@ impl IntoResponse for AppError {
             AppError::Validation(ref msg) => (StatusCode::BAD_REQUEST, msg.as_str()),
             AppError::NotFound(ref msg) => (StatusCode::NOT_FOUND, msg.as_str()),
             AppError::BadRequest(ref msg) => (StatusCode::BAD_REQUEST, msg.as_str()),
-            AppError::Internal(ref e) => {
-                tracing::error!("Internal error: {:?}", e);
+            AppError::Conflict(ref msg) => (StatusCode::CONFLICT, msg.as_str()),
+            AppError::Unauthorized(ref msg) => (StatusCode::UNAUTHORIZED, msg.as_str()),
+            AppError::Internal(ref msg) => {
+                tracing::error!("Internal error: {}", msg);
                 (StatusCode::INTERNAL_SERVER_ERROR, "Internal server error")
             }
             AppError::Serialization(ref e) => {
