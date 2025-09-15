@@ -11,7 +11,7 @@ use uuid::Uuid;
 use validator::Validate;
 
 use crate::{
-    db::DbPool,
+    routes::AppState,
     error::{AppError, Result},
     models::{
         AuthResponse, CreateUserRequest, LoginRequest, UpdateUserRequest, User, UserResponse,
@@ -28,7 +28,7 @@ pub struct Claims {
 const JWT_SECRET: &[u8] = b"your-secret-key"; // In production, use environment variable
 
 pub async fn register_user(
-    State(pool): State<DbPool>,
+    State(state): State<AppState>,
     Json(payload): Json<CreateUserRequest>,
 ) -> Result<(StatusCode, Json<UserResponse>)> {
     payload.validate().map_err(|e| AppError::Validation(e.to_string()))?;
@@ -39,7 +39,7 @@ pub async fn register_user(
     )
     .bind(&payload.username)
     .bind(&payload.email)
-    .fetch_optional(&pool)
+    .fetch_optional(&state.db_pool)
     .await?;
 
     if existing.is_some() {
@@ -63,19 +63,19 @@ pub async fn register_user(
     .bind(&payload.full_name)
     .bind(now)
     .bind(now)
-    .fetch_one(&pool)
+    .fetch_one(&state.db_pool)
     .await?;
 
     Ok((StatusCode::CREATED, Json(user.into())))
 }
 
 pub async fn login_user(
-    State(pool): State<DbPool>,
+    State(state): State<AppState>,
     Json(payload): Json<LoginRequest>,
 ) -> Result<Json<AuthResponse>> {
     let user = sqlx::query_as::<_, User>("SELECT * FROM users WHERE username = $1")
         .bind(&payload.username)
-        .fetch_optional(&pool)
+        .fetch_optional(&state.db_pool)
         .await?
         .ok_or_else(|| AppError::Unauthorized("Invalid credentials".to_string()))?;
 
@@ -106,12 +106,12 @@ pub async fn login_user(
 }
 
 pub async fn get_user_profile(
-    State(pool): State<DbPool>,
+    State(state): State<AppState>,
     Path(user_id): Path<Uuid>,
 ) -> Result<Json<UserResponse>> {
     let user = sqlx::query_as::<_, User>("SELECT * FROM users WHERE id = $1")
         .bind(user_id)
-        .fetch_optional(&pool)
+        .fetch_optional(&state.db_pool)
         .await?
         .ok_or_else(|| AppError::NotFound(format!("User with id {} not found", user_id)))?;
 
@@ -119,7 +119,7 @@ pub async fn get_user_profile(
 }
 
 pub async fn update_user_profile(
-    State(pool): State<DbPool>,
+    State(state): State<AppState>,
     Path(user_id): Path<Uuid>,
     Json(payload): Json<UpdateUserRequest>,
 ) -> Result<Json<UserResponse>> {
@@ -127,7 +127,7 @@ pub async fn update_user_profile(
 
     let existing_user = sqlx::query_as::<_, User>("SELECT * FROM users WHERE id = $1")
         .bind(user_id)
-        .fetch_optional(&pool)
+        .fetch_optional(&state.db_pool)
         .await?
         .ok_or_else(|| AppError::NotFound(format!("User with id {} not found", user_id)))?;
 
@@ -148,19 +148,19 @@ pub async fn update_user_profile(
     .bind(is_active)
     .bind(Utc::now())
     .bind(user_id)
-    .fetch_one(&pool)
+    .fetch_one(&state.db_pool)
     .await?;
 
     Ok(Json(updated_user.into()))
 }
 
 pub async fn delete_user(
-    State(pool): State<DbPool>,
+    State(state): State<AppState>,
     Path(user_id): Path<Uuid>,
 ) -> Result<StatusCode> {
     let result = sqlx::query("DELETE FROM users WHERE id = $1")
         .bind(user_id)
-        .execute(&pool)
+        .execute(&state.db_pool)
         .await?;
 
     if result.rows_affected() == 0 {

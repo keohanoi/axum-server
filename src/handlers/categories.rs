@@ -8,7 +8,7 @@ use uuid::Uuid;
 use validator::Validate;
 
 use crate::{
-    db::DbPool,
+    routes::AppState,
     error::{AppError, Result},
     models::{
         Category, CategoryResponse, CreateCategoryRequest, UpdateCategoryRequest,
@@ -21,7 +21,7 @@ pub struct CategoryQuery {
 }
 
 pub async fn create_category(
-    State(pool): State<DbPool>,
+    State(state): State<AppState>,
     Query(query): Query<CategoryQuery>,
     Json(payload): Json<CreateCategoryRequest>,
 ) -> Result<(StatusCode, Json<CategoryResponse>)> {
@@ -33,7 +33,7 @@ pub async fn create_category(
     )
     .bind(&payload.name)
     .bind(query.user_id)
-    .fetch_optional(&pool)
+    .fetch_optional(&state.db_pool)
     .await?;
 
     if existing.is_some() {
@@ -54,21 +54,21 @@ pub async fn create_category(
     .bind(query.user_id)
     .bind(now)
     .bind(now)
-    .fetch_one(&pool)
+    .fetch_one(&state.db_pool)
     .await?;
 
     Ok((StatusCode::CREATED, Json(category.into())))
 }
 
 pub async fn get_categories(
-    State(pool): State<DbPool>,
+    State(state): State<AppState>,
     Query(query): Query<CategoryQuery>,
 ) -> Result<Json<Vec<CategoryResponse>>> {
     let categories = sqlx::query_as::<_, Category>(
         "SELECT * FROM categories WHERE user_id = $1 ORDER BY name"
     )
     .bind(query.user_id)
-    .fetch_all(&pool)
+    .fetch_all(&state.db_pool)
     .await?;
 
     let response: Vec<CategoryResponse> = categories.into_iter().map(CategoryResponse::from).collect();
@@ -76,12 +76,12 @@ pub async fn get_categories(
 }
 
 pub async fn get_category(
-    State(pool): State<DbPool>,
+    State(state): State<AppState>,
     Path(category_id): Path<Uuid>,
 ) -> Result<Json<CategoryResponse>> {
     let category = sqlx::query_as::<_, Category>("SELECT * FROM categories WHERE id = $1")
         .bind(category_id)
-        .fetch_optional(&pool)
+        .fetch_optional(&state.db_pool)
         .await?
         .ok_or_else(|| AppError::NotFound(format!("Category with id {} not found", category_id)))?;
 
@@ -89,7 +89,7 @@ pub async fn get_category(
 }
 
 pub async fn update_category(
-    State(pool): State<DbPool>,
+    State(state): State<AppState>,
     Path(category_id): Path<Uuid>,
     Json(payload): Json<UpdateCategoryRequest>,
 ) -> Result<Json<CategoryResponse>> {
@@ -97,7 +97,7 @@ pub async fn update_category(
 
     let existing_category = sqlx::query_as::<_, Category>("SELECT * FROM categories WHERE id = $1")
         .bind(category_id)
-        .fetch_optional(&pool)
+        .fetch_optional(&state.db_pool)
         .await?
         .ok_or_else(|| AppError::NotFound(format!("Category with id {} not found", category_id)))?;
 
@@ -114,7 +114,7 @@ pub async fn update_category(
             .bind(new_name)
             .bind(existing_category.user_id)
             .bind(category_id)
-            .fetch_optional(&pool)
+            .fetch_optional(&state.db_pool)
             .await?;
 
             if existing.is_some() {
@@ -136,19 +136,19 @@ pub async fn update_category(
     .bind(&color)
     .bind(Utc::now())
     .bind(category_id)
-    .fetch_one(&pool)
+    .fetch_one(&state.db_pool)
     .await?;
 
     Ok(Json(updated_category.into()))
 }
 
 pub async fn delete_category(
-    State(pool): State<DbPool>,
+    State(state): State<AppState>,
     Path(category_id): Path<Uuid>,
 ) -> Result<StatusCode> {
     let result = sqlx::query("DELETE FROM categories WHERE id = $1")
         .bind(category_id)
-        .execute(&pool)
+        .execute(&state.db_pool)
         .await?;
 
     if result.rows_affected() == 0 {

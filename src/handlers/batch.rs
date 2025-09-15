@@ -7,13 +7,13 @@ use chrono::Utc;
 use uuid::Uuid;
 
 use crate::{
-    db::DbPool,
+    routes::AppState,
     error::{AppError, Result},
     models::{BatchUpdateTodosRequest, TodoResponse},
 };
 
 pub async fn batch_update_todos(
-    State(pool): State<DbPool>,
+    State(state): State<AppState>,
     Json(payload): Json<BatchUpdateTodosRequest>,
 ) -> Result<Json<Vec<TodoResponse>>> {
     if payload.todo_ids.is_empty() {
@@ -24,7 +24,7 @@ pub async fn batch_update_todos(
         return Err(AppError::Validation("Too many todos (max 100)".to_string()));
     }
 
-    let mut tx = pool.begin().await?;
+    let mut tx = state.db_pool.begin().await?;
     let mut updated_todos = Vec::new();
 
     for todo_id in &payload.todo_ids {
@@ -64,7 +64,7 @@ pub async fn batch_update_todos(
 }
 
 pub async fn batch_delete_todos(
-    State(pool): State<DbPool>,
+    State(state): State<AppState>,
     Json(todo_ids): Json<Vec<Uuid>>,
 ) -> Result<StatusCode> {
     if todo_ids.is_empty() {
@@ -89,7 +89,7 @@ pub async fn batch_delete_todos(
         q = q.bind(id);
     }
 
-    let result = q.execute(&pool).await?;
+    let result = q.execute(&state.db_pool).await?;
 
     if result.rows_affected() == 0 {
         return Err(AppError::NotFound("No todos found to delete".to_string()));

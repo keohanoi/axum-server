@@ -6,7 +6,7 @@ use chrono::Utc;
 use uuid::Uuid;
 
 use crate::{
-    db::DbPool,
+    routes::AppState,
     error::Result,
     models::{
         TodoStatsResponse, PriorityCount, CategoryCount,
@@ -19,7 +19,7 @@ pub struct StatsQuery {
 }
 
 pub async fn get_todo_statistics(
-    State(pool): State<DbPool>,
+    State(state): State<AppState>,
     Query(query): Query<StatsQuery>,
 ) -> Result<Json<TodoStatsResponse>> {
     let user_filter = if let Some(user_id) = query.user_id {
@@ -33,7 +33,7 @@ pub async fn get_todo_statistics(
         "SELECT COUNT(*) FROM todos {}",
         user_filter
     ))
-    .fetch_one(&pool)
+    .fetch_one(&state.db_pool)
     .await?;
 
     let completed_filter = if user_filter.is_empty() {
@@ -46,7 +46,7 @@ pub async fn get_todo_statistics(
         "SELECT COUNT(*) FROM todos {} completed = true",
         completed_filter
     ))
-    .fetch_one(&pool)
+    .fetch_one(&state.db_pool)
     .await?;
 
     let pending_todos = total_todos - completed_todos;
@@ -62,7 +62,7 @@ pub async fn get_todo_statistics(
         overdue_filter
     ))
     .bind(Utc::now())
-    .fetch_one(&pool)
+    .fetch_one(&state.db_pool)
     .await?;
 
     // Get todos by priority
@@ -72,7 +72,7 @@ pub async fn get_todo_statistics(
     );
     
     let priority_rows: Vec<(Option<i32>, i64)> = sqlx::query_as(&priority_query)
-        .fetch_all(&pool)
+        .fetch_all(&state.db_pool)
         .await?;
 
     let todos_by_priority: Vec<PriorityCount> = priority_rows
@@ -100,7 +100,7 @@ pub async fn get_todo_statistics(
     );
     
     let category_rows: Vec<(Option<Uuid>, Option<String>, i64)> = sqlx::query_as(&category_query)
-        .fetch_all(&pool)
+        .fetch_all(&state.db_pool)
         .await?;
 
     let todos_by_category: Vec<CategoryCount> = category_rows

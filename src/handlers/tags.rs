@@ -8,7 +8,7 @@ use uuid::Uuid;
 use validator::Validate;
 
 use crate::{
-    db::DbPool,
+    routes::AppState,
     error::{AppError, Result},
     models::{
         Tag, TagResponse, CreateTagRequest,
@@ -21,7 +21,7 @@ pub struct TagQuery {
 }
 
 pub async fn create_tag(
-    State(pool): State<DbPool>,
+    State(state): State<AppState>,
     Query(query): Query<TagQuery>,
     Json(payload): Json<CreateTagRequest>,
 ) -> Result<(StatusCode, Json<TagResponse>)> {
@@ -33,7 +33,7 @@ pub async fn create_tag(
     )
     .bind(&payload.name)
     .bind(query.user_id)
-    .fetch_optional(&pool)
+    .fetch_optional(&state.db_pool)
     .await?;
 
     if existing.is_some() {
@@ -50,21 +50,21 @@ pub async fn create_tag(
     .bind(&payload.name)
     .bind(query.user_id)
     .bind(Utc::now())
-    .fetch_one(&pool)
+    .fetch_one(&state.db_pool)
     .await?;
 
     Ok((StatusCode::CREATED, Json(tag.into())))
 }
 
 pub async fn get_tags(
-    State(pool): State<DbPool>,
+    State(state): State<AppState>,
     Query(query): Query<TagQuery>,
 ) -> Result<Json<Vec<TagResponse>>> {
     let tags = sqlx::query_as::<_, Tag>(
         "SELECT * FROM tags WHERE user_id = $1 ORDER BY name"
     )
     .bind(query.user_id)
-    .fetch_all(&pool)
+    .fetch_all(&state.db_pool)
     .await?;
 
     let response: Vec<TagResponse> = tags.into_iter().map(TagResponse::from).collect();
@@ -72,12 +72,12 @@ pub async fn get_tags(
 }
 
 pub async fn get_tag(
-    State(pool): State<DbPool>,
+    State(state): State<AppState>,
     Path(tag_id): Path<Uuid>,
 ) -> Result<Json<TagResponse>> {
     let tag = sqlx::query_as::<_, Tag>("SELECT * FROM tags WHERE id = $1")
         .bind(tag_id)
-        .fetch_optional(&pool)
+        .fetch_optional(&state.db_pool)
         .await?
         .ok_or_else(|| AppError::NotFound(format!("Tag with id {} not found", tag_id)))?;
 
@@ -85,12 +85,12 @@ pub async fn get_tag(
 }
 
 pub async fn delete_tag(
-    State(pool): State<DbPool>,
+    State(state): State<AppState>,
     Path(tag_id): Path<Uuid>,
 ) -> Result<StatusCode> {
     let result = sqlx::query("DELETE FROM tags WHERE id = $1")
         .bind(tag_id)
-        .execute(&pool)
+        .execute(&state.db_pool)
         .await?;
 
     if result.rows_affected() == 0 {
@@ -101,13 +101,13 @@ pub async fn delete_tag(
 }
 
 pub async fn assign_tag_to_todo(
-    State(pool): State<DbPool>,
+    State(state): State<AppState>,
     Path((todo_id, tag_id)): Path<(Uuid, Uuid)>,
 ) -> Result<StatusCode> {
     // Check if todo and tag exist
     let todo_exists = sqlx::query("SELECT 1 FROM todos WHERE id = $1")
         .bind(todo_id)
-        .fetch_optional(&pool)
+        .fetch_optional(&state.db_pool)
         .await?
         .is_some();
 
@@ -117,7 +117,7 @@ pub async fn assign_tag_to_todo(
 
     let tag_exists = sqlx::query("SELECT 1 FROM tags WHERE id = $1")
         .bind(tag_id)
-        .fetch_optional(&pool)
+        .fetch_optional(&state.db_pool)
         .await?
         .is_some();
 
@@ -131,20 +131,20 @@ pub async fn assign_tag_to_todo(
     )
     .bind(todo_id)
     .bind(tag_id)
-    .execute(&pool)
+    .execute(&state.db_pool)
     .await?;
 
     Ok(StatusCode::OK)
 }
 
 pub async fn remove_tag_from_todo(
-    State(pool): State<DbPool>,
+    State(state): State<AppState>,
     Path((todo_id, tag_id)): Path<(Uuid, Uuid)>,
 ) -> Result<StatusCode> {
     let result = sqlx::query("DELETE FROM todo_tags WHERE todo_id = $1 AND tag_id = $2")
         .bind(todo_id)
         .bind(tag_id)
-        .execute(&pool)
+        .execute(&state.db_pool)
         .await?;
 
     if result.rows_affected() == 0 {
